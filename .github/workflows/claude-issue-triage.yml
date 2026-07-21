@@ -1,0 +1,94 @@
+name: Claude Issue Triage
+
+on:
+  issues:
+    types: [opened, edited]
+
+jobs:
+  triage:
+    # No ejecutar si el issue menciona @claude: ese caso ya lo maneja
+    # claude.yml para evitar que ambos workflows respondan al mismo evento.
+    if: |
+      !contains(github.event.issue.body, '@claude') &&
+      !contains(github.event.issue.title, '@claude')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write # asignar labels, crear labels y comentar
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Issue Triage
+        id: claude-triage
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+          claude_args: |
+            --allowed-tools "Bash(gh issue view:*),Bash(gh issue comment:*),Bash(gh label list:*),Bash(gh label create:*),Bash(gh issue edit:*)"
+
+          prompt: |
+            Analiza el issue #${{ github.event.issue.number }} de este repositorio
+            (Tetris en JavaScript vanilla, ver CLAUDE.md para contexto del proyecto)
+            y realiza un triage automático. Sigue estos pasos en orden:
+
+            1. Lee el issue completo con `gh issue view ${{ github.event.issue.number }} --comments`
+               (título, cuerpo y comentarios existentes).
+
+            2. Revisa el código del repo (`index.html`, `style.css`, `game.js`)
+               cuando ayude a entender el problema reportado o la funcionalidad
+               solicitada.
+
+            3. Determina las labels apropiadas usando esta taxonomía fija:
+               - Tipo: `bug`, `enhancement`, `feature`, `question`, `documentation`
+               - Área: `area:gameplay`, `area:rendering`, `area:controls`,
+                 `area:scoring`, `area:ui`
+               - Prioridad: `priority:low`, `priority:medium`, `priority:high`
+
+               Con `gh label list`, comprueba cuáles ya existen en el repo.
+               Crea las que falten con `gh label create <nombre> --description "<desc>" --color "<hex>"`.
+               Aplica las labels elegidas al issue con
+               `gh issue edit ${{ github.event.issue.number }} --add-label "<label1>,<label2>,..."`.
+               Elige solo las labels que realmente apliquen (normalmente 1 de tipo,
+               0-2 de área, 1 de prioridad).
+
+            4. Publica un comentario de diagnóstico en **español** con
+               `gh issue comment ${{ github.event.issue.number }} --body "..."`
+               usando exactamente esta estructura en Markdown:
+
+               ## Diagnóstico automático
+
+               **Resumen**
+               (1-2 frases explicando qué reporta o solicita el issue)
+
+               **Labels asignadas**
+               (lista de labels aplicadas con una breve justificación de cada una)
+
+               **Análisis técnico**
+               (componentes/archivos de game.js probablemente implicados: modelo
+               de tablero, piezas/rotación, colisión/wall kicks, game loop,
+               renderizado, scoring/leveling, etc. Sé específico y referencia
+               funciones o secciones relevantes de game.js cuando sea posible)
+
+               **Propuesta de solución de alto nivel**
+               (pasos sugeridos para abordar el problema, sin escribir código
+               todavía; esto servirá de base para implementar la solución después)
+
+               **Preguntas abiertas**
+               (información faltante o ambigüedades a aclarar con quien reportó
+               el issue; omite esta sección si no aplica)
+
+               ---
+               *Diagnóstico automático generado por Claude.*
+
+               Antes de comentar, revisa si ya existe un comentario anterior que
+               termine con "*Diagnóstico automático generado por Claude.*". Si
+               existe, no publiques uno nuevo: en su lugar publica un comentario
+               que reemplace el diagnóstico anterior indicando que es una
+               actualización tras la edición del issue, manteniendo la misma
+               estructura.
