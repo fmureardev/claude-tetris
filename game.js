@@ -14,7 +14,13 @@ const COLORS = [
   '#90caf9', // J - pale blue
   '#ffb74d', // L - orange
   '#b0bec5', // Nut - metallic gray
+  '#37474f', // Special - slate
 ];
+
+const SPECIAL = 9;
+const EFFECTS = ['bomb', 'lightning', 'tint', 'gravity', 'freeze'];
+const EFFECT_ICONS = { bomb: '💣', lightning: '⚡', tint: '🎨', gravity: '⬇️', freeze: '❄️' };
+const FREEZE_DURATION = 5000;
 
 const PIECES = [
   null,
@@ -45,6 +51,7 @@ const themeToggle = document.getElementById('theme-toggle');
 
 let board, current, next, score, lines, level, paused, gameOver, lastTime, dropAccum, dropInterval, animId;
 let gridColor;
+let pendingSpecial, lineMilestone, frozenUntil;
 
 function updateGridColor() {
   gridColor = getComputedStyle(document.body).getPropertyValue('--grid-color').trim();
@@ -58,6 +65,12 @@ function randomPiece() {
   const type = Math.floor(Math.random() * 8) + 1;
   const shape = PIECES[type].map(row => [...row]);
   return { type, shape, x: Math.floor(COLS / 2) - Math.floor(shape[0].length / 2), y: 0 };
+}
+
+function randomSpecialPiece() {
+  const effect = EFFECTS[Math.floor(Math.random() * EFFECTS.length)];
+  return { type: SPECIAL, shape: [[SPECIAL]], effect, special: true,
+           x: Math.floor(COLS / 2), y: 0 };
 }
 
 function collide(shape, ox, oy) {
@@ -116,7 +129,65 @@ function clearLines() {
     score += (LINE_SCORES[cleared] || 0) * level;
     level = Math.floor(lines / 10) + 1;
     dropInterval = Math.max(100, 1000 - (level - 1) * 90);
+    const milestone = Math.floor(lines / 10);
+    if (milestone > lineMilestone) {
+      lineMilestone = milestone;
+      pendingSpecial = true;
+    }
     updateHUD();
+  }
+}
+
+function applyGravity() {
+  for (let c = 0; c < COLS; c++) {
+    const stack = [];
+    for (let r = ROWS - 1; r >= 0; r--) {
+      if (board[r][c]) stack.push(board[r][c]);
+    }
+    for (let r = ROWS - 1; r >= 0; r--) {
+      board[r][c] = stack[ROWS - 1 - r] ?? 0;
+    }
+  }
+}
+
+function removeMostCommonColor() {
+  const counts = {};
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++)
+      if (board[r][c]) counts[board[r][c]] = (counts[board[r][c]] || 0) + 1;
+  const colors = Object.keys(counts);
+  if (!colors.length) return;
+  const mostCommon = Number(colors.reduce((a, b) => (counts[a] >= counts[b] ? a : b)));
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++)
+      if (board[r][c] === mostCommon) board[r][c] = 0;
+  applyGravity();
+}
+
+function applyEffect(piece) {
+  const { x, y, effect } = piece;
+  switch (effect) {
+    case 'bomb':
+      for (let dr = -1; dr <= 1; dr++)
+        for (let dc = -1; dc <= 1; dc++) {
+          const nr = y + dr, nc = x + dc;
+          if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) board[nr][nc] = 0;
+        }
+      break;
+    case 'lightning':
+      if (y >= 0 && y < ROWS) board[y].fill(0);
+      for (let r = 0; r < ROWS; r++) if (x >= 0 && x < COLS) board[r][x] = 0;
+      break;
+    case 'tint':
+      removeMostCommonColor();
+      break;
+    case 'gravity':
+      applyGravity();
+      break;
+    case 'freeze':
+      merge();
+      frozenUntil = performance.now() + FREEZE_DURATION;
+      break;
   }
 }
 
@@ -144,14 +215,20 @@ function softDrop() {
 }
 
 function lockPiece() {
-  merge();
+  if (current.special) applyEffect(current);
+  else merge();
   clearLines();
   spawn();
 }
 
 function spawn() {
   current = next;
-  next = randomPiece();
+  if (pendingSpecial) {
+    pendingSpecial = false;
+    next = randomSpecialPiece();
+  } else {
+    next = randomPiece();
+  }
   if (collide(current.shape, current.x, current.y)) {
     endGame();
   }
@@ -173,6 +250,16 @@ function drawBlock(context, x, y, colorIndex, size, alpha) {
   // highlight
   context.fillStyle = 'rgba(255,255,255,0.12)';
   context.fillRect(x * size + 1, y * size + 1, size - 2, 4);
+  context.globalAlpha = 1;
+}
+
+function drawEffectIcon(context, x, y, size, effect, alpha) {
+  context.globalAlpha = alpha ?? 1;
+  context.fillStyle = '#ffffff';
+  context.font = `${Math.floor(size * 0.6)}px sans-serif`;
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  context.fillText(EFFECT_ICONS[effect], x * size + size / 2, y * size + size / 2 + 1);
   context.globalAlpha = 1;
 }
 
@@ -210,11 +297,24 @@ function draw() {
     for (let c = 0; c < current.shape[r].length; c++)
       if (current.shape[r][c])
         drawBlock(ctx, current.x + c, gy + r, current.shape[r][c], BLOCK, 0.2);
+  if (current.special) drawEffectIcon(ctx, current.x, gy, BLOCK, current.effect, 0.3);
 
   // current piece
   for (let r = 0; r < current.shape.length; r++)
     for (let c = 0; c < current.shape[r].length; c++)
       drawBlock(ctx, current.x + c, current.y + r, current.shape[r][c], BLOCK);
+  if (current.special) drawEffectIcon(ctx, current.x, current.y, BLOCK, current.effect);
+
+  // freeze feedback
+  if (performance.now() < frozenUntil) {
+    ctx.globalAlpha = 0.85;
+    ctx.fillStyle = '#4fc3f7';
+    ctx.font = '20px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText('❄️ Congelado', canvas.width / 2, 6);
+    ctx.globalAlpha = 1;
+  }
 }
 
 function drawNext() {
@@ -226,6 +326,7 @@ function drawNext() {
   for (let r = 0; r < shape.length; r++)
     for (let c = 0; c < shape[r].length; c++)
       drawBlock(nextCtx, offX + c, offY + r, shape[r][c], NB);
+  if (next.special) drawEffectIcon(nextCtx, offX, offY, NB, next.effect);
 }
 
 function endGame() {
@@ -253,13 +354,17 @@ function togglePause() {
 function loop(ts) {
   const dt = ts - lastTime;
   lastTime = ts;
-  dropAccum += dt;
-  if (dropAccum >= dropInterval) {
+  if (ts < frozenUntil) {
     dropAccum = 0;
-    if (!collide(current.shape, current.x, current.y + 1)) {
-      current.y++;
-    } else {
-      lockPiece();
+  } else {
+    dropAccum += dt;
+    if (dropAccum >= dropInterval) {
+      dropAccum = 0;
+      if (!collide(current.shape, current.x, current.y + 1)) {
+        current.y++;
+      } else {
+        lockPiece();
+      }
     }
   }
   draw();
@@ -276,6 +381,9 @@ function init() {
   dropInterval = 1000;
   dropAccum = 0;
   lastTime = performance.now();
+  pendingSpecial = false;
+  lineMilestone = 0;
+  frozenUntil = 0;
   next = randomPiece();
   spawn();
   updateHUD();
