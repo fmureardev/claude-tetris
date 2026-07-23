@@ -36,6 +36,10 @@ const PIECES = [
 
 const LINE_SCORES = [0, 100, 300, 500, 800];
 
+const SCORES_KEY = 'tetris-highscores';
+const STATS_KEY = 'tetris-stats';
+const MAX_SCORES = 5;
+
 const canvas = document.getElementById('board');
 const ctx = canvas.getContext('2d');
 const nextCanvas = document.getElementById('next-canvas');
@@ -43,15 +47,120 @@ const nextCtx = nextCanvas.getContext('2d');
 const scoreEl = document.getElementById('score');
 const linesEl = document.getElementById('lines');
 const levelEl = document.getElementById('level');
+const comboEl = document.getElementById('combo');
 const overlay = document.getElementById('overlay');
 const overlayTitle = document.getElementById('overlay-title');
 const overlayScore = document.getElementById('overlay-score');
+const overlayStats = document.getElementById('overlay-stats');
+const overlayScoresList = document.getElementById('overlay-scores-list');
+const nameEntry = document.getElementById('name-entry');
+const nameInput = document.getElementById('name-input');
+const saveNameBtn = document.getElementById('save-name-btn');
 const restartBtn = document.getElementById('restart-btn');
 const themeToggle = document.getElementById('theme-toggle');
+const startScreen = document.getElementById('start-screen');
+const startScoresList = document.getElementById('start-scores-list');
+const startBestCombo = document.getElementById('start-best-combo');
+const startMaxLines = document.getElementById('start-max-lines');
+const startBtn = document.getElementById('start-btn');
 
 let board, current, next, score, lines, level, paused, gameOver, lastTime, dropAccum, dropInterval, animId;
 let gridColor;
 let pendingSpecial, lineMilestone, frozenUntil;
+let started = false;
+let combo = 0;
+let bestComboRun = 0;
+let stats = loadStats();
+
+function loadScores() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SCORES_KEY));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveScores(list) {
+  localStorage.setItem(SCORES_KEY, JSON.stringify(list));
+}
+
+function loadStats() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(STATS_KEY)) || {};
+    return { bestCombo: parsed.bestCombo || 0, maxLines: parsed.maxLines || 0 };
+  } catch {
+    return { bestCombo: 0, maxLines: 0 };
+  }
+}
+
+function saveStats() {
+  localStorage.setItem(STATS_KEY, JSON.stringify(stats));
+}
+
+function qualifiesForTopScores(s) {
+  const list = loadScores();
+  return list.length < MAX_SCORES || s > list[list.length - 1].score;
+}
+
+function addScore(name, s) {
+  const list = loadScores();
+  const entry = { name: name || 'AAA', score: s };
+  list.push(entry);
+  list.sort((a, b) => b.score - a.score);
+  const trimmed = list.slice(0, MAX_SCORES);
+  saveScores(trimmed);
+  return entry;
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function renderScoresTable(container, highlightEntry) {
+  const list = loadScores();
+  if (!list.length) {
+    container.innerHTML = '<p class="scores-empty">Sin récords aún</p>';
+    return;
+  }
+  // localStorage round-trips lose object identity, so match by value and
+  // only highlight the first equal entry (avoids double-highlighting ties).
+  let matched = false;
+  const rows = list.map((entry, i) => {
+    const isMatch = !matched && highlightEntry &&
+      entry.score === highlightEntry.score && entry.name === highlightEntry.name;
+    if (isMatch) matched = true;
+    const cls = isMatch ? ' class="score-highlight"' : '';
+    return `<li${cls}><span class="score-rank">${i + 1}</span><span class="score-name">${escapeHtml(entry.name)}</span><span class="score-points">${entry.score.toLocaleString()}</span></li>`;
+  }).join('');
+  container.innerHTML = `<ol class="scores-list">${rows}</ol>`;
+}
+
+function renderAllScoresTables(highlightEntry) {
+  renderScoresTable(startScoresList, highlightEntry);
+  renderScoresTable(overlayScoresList, highlightEntry);
+}
+
+function renderStartStats() {
+  startBestCombo.textContent = stats.bestCombo;
+  startMaxLines.textContent = stats.maxLines;
+}
+
+function updateOverlayStats() {
+  overlayStats.textContent =
+    `Combo: ${bestComboRun} (récord ${stats.bestCombo}) · Líneas: ${lines} (récord ${stats.maxLines})`;
+}
+
+function resetRecords() {
+  localStorage.removeItem(SCORES_KEY);
+  localStorage.removeItem(STATS_KEY);
+  stats = { bestCombo: 0, maxLines: 0 };
+  renderAllScoresTables(null);
+  renderStartStats();
+  if (!overlay.classList.contains('hidden')) updateOverlayStats();
+}
 
 function updateGridColor() {
   gridColor = getComputedStyle(document.body).getPropertyValue('--grid-color').trim();
@@ -136,6 +245,7 @@ function clearLines() {
     }
     updateHUD();
   }
+  return cleared;
 }
 
 function applyGravity() {
@@ -217,7 +327,14 @@ function softDrop() {
 function lockPiece() {
   if (current.special) applyEffect(current);
   else merge();
-  clearLines();
+  const cleared = clearLines();
+  if (cleared > 0) {
+    combo++;
+    if (combo > bestComboRun) bestComboRun = combo;
+  } else {
+    combo = 0;
+  }
+  updateHUD();
   spawn();
 }
 
@@ -239,6 +356,7 @@ function updateHUD() {
   scoreEl.textContent = score.toLocaleString();
   linesEl.textContent = lines;
   levelEl.textContent = level;
+  comboEl.textContent = combo;
 }
 
 function drawBlock(context, x, y, colorIndex, size, alpha) {
@@ -332,9 +450,30 @@ function drawNext() {
 function endGame() {
   gameOver = true;
   cancelAnimationFrame(animId);
+  if (lines > stats.maxLines) stats.maxLines = lines;
+  if (bestComboRun > stats.bestCombo) stats.bestCombo = bestComboRun;
+  saveStats();
   overlayTitle.textContent = 'GAME OVER';
   overlayScore.textContent = `Puntuación: ${score.toLocaleString()}`;
+  updateOverlayStats();
+  const qualifies = qualifiesForTopScores(score);
+  if (qualifies) {
+    nameEntry.classList.remove('hidden');
+    nameInput.value = '';
+  } else {
+    nameEntry.classList.add('hidden');
+  }
+  renderAllScoresTables(null);
+  renderStartStats();
   overlay.classList.remove('hidden');
+  if (qualifies) nameInput.focus();
+}
+
+function finalizePendingScore() {
+  if (nameEntry.classList.contains('hidden')) return;
+  const entry = addScore(nameInput.value.trim(), score);
+  nameEntry.classList.add('hidden');
+  renderAllScoresTables(entry);
 }
 
 function togglePause() {
@@ -384,6 +523,9 @@ function init() {
   pendingSpecial = false;
   lineMilestone = 0;
   frozenUntil = 0;
+  combo = 0;
+  bestComboRun = 0;
+  started = true;
   next = randomPiece();
   spawn();
   updateHUD();
@@ -393,6 +535,7 @@ function init() {
 }
 
 document.addEventListener('keydown', e => {
+  if (!started) return;
   if (e.code === 'KeyP') { togglePause(); return; }
   if (paused || gameOver) return;
   switch (e.code) {
@@ -417,7 +560,28 @@ document.addEventListener('keydown', e => {
   updateHUD();
 });
 
-restartBtn.addEventListener('click', init);
+restartBtn.addEventListener('click', () => {
+  finalizePendingScore();
+  init();
+});
+
+startBtn.addEventListener('click', () => {
+  startScreen.classList.add('hidden');
+  init();
+});
+
+saveNameBtn.addEventListener('click', finalizePendingScore);
+
+nameInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    finalizePendingScore();
+  }
+});
+
+document.querySelectorAll('.reset-scores-btn').forEach(btn => {
+  btn.addEventListener('click', resetRecords);
+});
 
 themeToggle.addEventListener('change', () => {
   document.body.classList.toggle('light-theme', themeToggle.checked);
@@ -425,4 +589,5 @@ themeToggle.addEventListener('change', () => {
 });
 
 updateGridColor();
-init();
+renderAllScoresTables(null);
+renderStartStats();
